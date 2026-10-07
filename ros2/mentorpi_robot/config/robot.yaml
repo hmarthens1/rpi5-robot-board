@@ -1,0 +1,21 @@
+# robot_node parameters for the MentorPi T1 (tracked). Safety limits are read at start-up.
+/**:
+  robot_node:
+    ros__parameters:
+      max_speed: 50.0          # % of the motor's top speed (JGB520: 1.5 rev/s -> 0.75 rev/s)
+      max_duration: 5.0        # s, longest timed motion (drive, motor)
+      move_timeout: 15.0       # s, longest move/turn
+      max_move_m: 2.0
+      cmd_vel_timeout: 0.5
+      min_clearance: 0.25      # m, lidar, in the direction of travel
+      front_half_angle_deg: 25.0
+      motor_profile: JGB520    # JGB37-520 1:90, 3960 counts per turn (Lab 03)
+      port: /dev/rrclite
+      left_motor: 1
+      right_motor: 2
+      left_sign: 1             # calibrated on robot04, see README "Calibration"
+      right_sign: -1
+      wheel_radius: 0.0325     # m, track drive sprocket - calibrate with "move"
+      track_width: 0.170       # m, effective - calibrate with "turn"
+      battery_low_v: 7.0       # 2S pack
+      lidar_yaw_deg: 0.0

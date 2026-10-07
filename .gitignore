@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.vscode/
+
+# colcon, when the ROS package is built in place
+ros2/robot_status/*.egg-info/
+
+# colcon, when built in place
+build/
+install/
+log/
