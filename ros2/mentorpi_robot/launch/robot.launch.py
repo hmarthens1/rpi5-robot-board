@@ -1,5 +1,7 @@
 """robot04's fleet nodes, in namespace /<hostname>:
-   ros2 launch mentorpi_robot robot.launch.py   [lidar:=true] [camera:=false] [point_cloud:=true]
+   ros2 launch mentorpi_robot robot.launch.py   [lidar:=false] [camera:=false] [point_cloud:=true]
+
+The lidar starts when /dev/lidar exists (udev/99-ms200-lidar.rules), the camera when its driver is installed.
 
 The Aurora 930 driver (deptrum-ros-driver-aurora930) is a vendor package, installed
 separately (see README); the camera nodes start only when it is installed."""
@@ -13,6 +15,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import PackageNotFoundError
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 CAMERA_PKG = "deptrum-ros-driver-aurora930"
 
@@ -30,10 +33,12 @@ def generate_launch_description():
     config = os.path.join(get_package_share_directory("mentorpi_robot"), "config", "robot.yaml")
     lidar = LaunchConfiguration("lidar")
     return LaunchDescription([
-        DeclareLaunchArgument("lidar", default_value="false"),
+        DeclareLaunchArgument("lidar", default_value="true" if os.path.exists("/dev/lidar") else "false"),
         DeclareLaunchArgument("lidar_port", default_value="/dev/lidar"),
         DeclareLaunchArgument("camera", default_value="true" if camera_installed() else "false"),
         DeclareLaunchArgument("point_cloud", default_value="false"),
+        DeclareLaunchArgument("camera_rate", default_value="10.0"),     # JPEG stream, Hz (teleop)
+        DeclareLaunchArgument("camera_width", default_value="480"),
         Node(package="mentorpi_robot", executable="robot_node", namespace=ns, output="screen",
              parameters=[config]),
         Node(package="mentorpi_robot", executable="ms200_node", namespace=ns, output="screen",
@@ -41,6 +46,7 @@ def generate_launch_description():
              parameters=[{"port": LaunchConfiguration("lidar_port"), "frame_id": ns + "/laser"}]),
         # Aurora 930: colour + depth, aligned, 15 fps; point cloud only on request (CPU)
         Node(package=CAMERA_PKG, executable="aurora930_node", namespace=ns + "/camera", output="log",
+             respawn=True, respawn_delay=2.0,       # camera_bridge kills it when it stalls
              condition=IfCondition(LaunchConfiguration("camera")),
              parameters=[{"rgb_enable": True, "depth_enable": True, "ir_enable": False,
                           "point_cloud_enable": LaunchConfiguration("point_cloud"),
@@ -48,7 +54,9 @@ def generate_launch_description():
                           "boot_order": 1, "resolution_mode_index": 2, "log_dir": "/tmp/",
                           "minimum_filter_depth_value": 150, "maximum_filter_depth_value": 4000}]),
         Node(package="mentorpi_robot", executable="camera_bridge", namespace=ns, output="screen",
-             condition=IfCondition(LaunchConfiguration("camera"))),
+             condition=IfCondition(LaunchConfiguration("camera")),
+             parameters=[{"rate": ParameterValue(LaunchConfiguration("camera_rate"), value_type=float),
+                          "width": ParameterValue(LaunchConfiguration("camera_width"), value_type=int)}]),
         # fixed frames (measure and correct for your robot)
         Node(package="tf2_ros", executable="static_transform_publisher", namespace=ns,
              arguments=["--x", "0.0", "--z", "0.12", "--frame-id", ns + "/base_footprint", "--child-frame-id", ns + "/laser"]),

@@ -19,10 +19,12 @@ Lab 01 (Ubuntu Server 24.04 + ROS 2 Jazzy), Lab 02 (the RRC Lite, `/dev/rrclite`
 ros2/mentorpi_robot/                 ROS 2 package (Python, ament_python)
   mentorpi_robot/rrclite.py            RRC Lite serial driver: 0xAA 0x55 protocol at 1 Mbaud
   mentorpi_robot/robot_node.py         the fleet interface, odometry, safety
-  mentorpi_robot/camera_bridge.py      depth camera -> the fleet's vision topics
+  mentorpi_robot/camera_bridge.py      depth camera -> the fleet's vision topics (+ stall watchdog)
+  mentorpi_robot/ms200_node.py         Oradar MS200 lidar -> scan
   launch/robot.launch.py               everything, in namespace /<hostname>
   config/robot.yaml                    limits, motor profile, track geometry
 scripts/install_service.sh           start it at boot (systemd unit robot-fleet-node)
+udev/99-ms200-lidar.rules            /dev/lidar
 ```
 
 ## Interface (namespace `/<hostname>`, e.g. `/robot04`)
@@ -107,6 +109,23 @@ cd ~/vendor_ws && colcon build --cmake-args -DSTREAM_SDK_TYPE=AURORA930 -DCMAKE_
 `install_service.sh` sources `~/vendor_ws` when it exists, and the launch file starts the
 camera only when the driver is installed (`camera:=false` to leave it out).
 
+### Lidar (Oradar MS200)
+
+The MS200 sits behind a CH340 USB-serial adapter (`1a86:7523`) and streams 47-byte packets
+at 230400 baud (LD06 layout, CRC-8 poly 0x4D). `udev/99-ms200-lidar.rules` names it
+`/dev/lidar`; it matches the USB port too, because the Hiwonder voice module is also a
+CH340. Check the port with `udevadm info -q property /dev/ttyUSB0 | grep ID_PATH=` and edit
+the rule if yours differs.
+
+```bash
+sudo cp udev/99-ms200-lidar.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
+ls -l /dev/lidar
+```
+
+The launch file starts `ms200_node` when `/dev/lidar` exists (`lidar:=false` to leave it out).
+Returns under 0.10 m (`range_min`) are dropped: that is the robot's own frame.
+
 **OpenCV:** use Ubuntu's 4.6 (`libopencv-dev`, `python3-opencv`), not a source build: Jazzy's
 `cv_bridge` and the Deptrum driver link against 4.6, and two OpenCVs in one process clash.
 
@@ -127,6 +146,6 @@ camera only when the driver is installed (`camera:=false` to leave it out).
 | Part | |
 |---|---|
 | Fleet interface, odometry, IMU, safety, boot service | working on robot04 |
-| Depth camera (Deptrum driver on Jazzy) → vision topics | working: RGB and depth 15 Hz, JPEG 3 Hz |
-| Lidar (`ms200_node`, own MS200 driver) | **to do** — on robot04 the lidar spins but its data doesn't reach the Pi yet; `lidar:=false` by default |
+| Depth camera (Deptrum driver on Jazzy) → vision topics | working: RGB and depth 15 Hz, JPEG 10 Hz at 480 px (`camera_rate`, `camera_width` launch args). The driver sometimes stalls: `camera_bridge` kills it after 6 s without frames and launch respawns it (~12 s to recover) |
+| Lidar (`ms200_node`, own MS200 driver) | working: `scan` 10 Hz, 450 rays, 0 CRC errors; starts when `/dev/lidar` exists. 0° = the robot's front and counter-clockwise, checked against the depth camera on robot04 |
 | `wheel_radius` / `track_width` | estimates, floor calibration to do |

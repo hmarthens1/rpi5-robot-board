@@ -1,0 +1,4 @@
+# Oradar MS200 lidar on robot04: CH340 (1a86:7523) in the Pi 5's USB port 1 -> /dev/lidar.
+# Matched by port as well as by ID: the Hiwonder voice module uses a CH340 too.
+# Check your port with: udevadm info -q property /dev/ttyUSB0 | grep ID_PATH=
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:1:1.0", SYMLINK+="lidar", GROUP="dialout", MODE="0660"

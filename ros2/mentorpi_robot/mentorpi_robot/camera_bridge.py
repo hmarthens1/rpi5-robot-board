@@ -15,8 +15,13 @@ and the voice agent already use:
                                 "nearest_m": nearest valid depth in the lower 2/3 of the view,
                                 "nearest_x": where it is, -1 (left) .. 1 (right)}
   in  vision/control           std_msgs/String JSON {"image": "rgb"|"depth"|"raw"}
+
+The Deptrum driver sometimes stops delivering frames without exiting (robot04, Oct 2026).
+If no colour frame arrives for restart_after_s, this node kills aurora930_node and the
+launch file (respawn=True) starts it again; at most once per restart_backoff_s.
 """
 import json
+import subprocess
 import threading
 import time
 
@@ -46,6 +51,10 @@ class CameraBridge(Node):
         self.rate = self.declare_parameter("rate", 3.0).value
         self.quality = self.declare_parameter("jpeg_quality", 70).value
         self.max_depth_mm = self.declare_parameter("max_depth_mm", 4000).value
+        self.restart_after = self.declare_parameter("restart_after_s", 6.0).value
+        self.restart_backoff = self.declare_parameter("restart_backoff_s", 30.0).value
+        self.started = time.monotonic()
+        self.last_restart = self.started - self.restart_backoff
         self.mode = "rgb"
         self.lock = threading.Lock()
         self.rgb = self.depth = None
@@ -57,6 +66,7 @@ class CameraBridge(Node):
         self.create_subscription(String, "vision/control", self.on_control, 10)
         self.create_timer(1.0 / self.rate, self.publish_image)
         self.create_timer(0.5, self.publish_state)
+        self.create_timer(1.0, self.watchdog)
 
     def on_rgb(self, msg):
         with self.lock:
@@ -81,8 +91,8 @@ class CameraBridge(Node):
         if self.img_pub.get_subscription_count() == 0:
             return
         with self.lock:
-            src = self.depth if self.mode == "depth" else self.rgb
-        if src is None:
+            src, stamp = (self.depth, self.depth_stamp) if self.mode == "depth" else (self.rgb, self.rgb_stamp)
+        if src is None or time.monotonic() - stamp > 1.0:     # don't resend a frozen frame
             return
         a = to_numpy(src)
         if self.mode == "depth":
@@ -98,6 +108,25 @@ class CameraBridge(Node):
         m.header.stamp, m.header.frame_id = self.get_clock().now().to_msg(), "camera"
         m.format, m.data = "jpeg", jpg.tobytes()
         self.img_pub.publish(m)
+
+    def watchdog(self):
+        if self.restart_after <= 0:
+            return
+        now = time.monotonic()
+        with self.lock:
+            last = self.rgb_stamp or self.started
+        if now - last < self.restart_after or now - self.last_restart < self.restart_backoff:
+            return
+        self.last_restart = now
+        # [a] so the pattern doesn't match a shell running this command
+        pids = subprocess.run(["pgrep", "-f", "[a]urora930_node"], capture_output=True, text=True).stdout.split()
+        self.get_logger().warning("no camera frame for %.0f s, restarting aurora930_node (pid %s)"
+                                  % (now - last, ",".join(pids) or "none"))
+        if pids:
+            subprocess.run(["kill", "-INT"] + pids, check=False)
+            # the SDK can hang on shutdown: kill the same pids (not the respawned one) if still there
+            threading.Timer(5.0, subprocess.run, args=(["kill", "-KILL"] + pids,),
+                            kwargs={"check": False, "stderr": subprocess.DEVNULL}).start()
 
     def publish_state(self):
         with self.lock:
