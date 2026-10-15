@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>robot04_slam</name>
+  <version>0.1.0</version>
+  <description>Hector SLAM on the laptop for robot04's MS200 lidar (scan streamed over DDS)</description>
+  <maintainer email="hmarthens@gmail.com">hmarthens1</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>hector_mapping</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

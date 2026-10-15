@@ -25,6 +25,8 @@ ros2/mentorpi_robot/                 ROS 2 package (Python, ament_python)
   config/robot.yaml                    limits, motor profile, track geometry
 scripts/install_service.sh           start it at boot (systemd unit robot-fleet-node)
 udev/99-ms200-lidar.rules            /dev/lidar
+pc/robot04_slam/                     (PC) Hector SLAM launch + RViz config for the robot's scan
+pc/robot04-mapper/                   (PC) app: camera view, teleop, start SLAM, save maps
 ```
 
 ## Interface (namespace `/<hostname>`, e.g. `/robot04`)
@@ -129,6 +131,34 @@ Returns under 0.10 m (`range_min`) are dropped: that is the robot's own frame.
 **OpenCV:** use Ubuntu's 4.6 (`libopencv-dev`, `python3-opencv`), not a source build: Jazzy's
 `cv_bridge` and the Deptrum driver link against 4.6, and two OpenCVs in one process clash.
 
+## On the PC: mapping with Hector SLAM
+
+The robot only publishes its scan; SLAM runs on the PC (ROS 2 Humble works with the
+robot's Jazzy over DDS: same `ROS_DOMAIN_ID=17`). Hector SLAM has no official ROS 2
+release; [RobotX-Workshops/hector_slam_ros2](https://github.com/RobotX-Workshops/hector_slam_ros2)
+(BSD-2, a Jazzy port) builds on Humble unchanged.
+
+```bash
+mkdir -p ~/hector_ws/src && cd ~/hector_ws/src
+git clone https://github.com/RobotX-Workshops/hector_slam_ros2.git
+ln -s ~/Desktop/rpi5-robot-board/pc/robot04_slam .        # this repo's launch + RViz config
+cd ~/hector_ws && source /opt/ros/humble/setup.bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+~/Desktop/rpi5-robot-board/pc/robot04-mapper/run.sh       # the app (see its README)
+# or without the app:
+ros2 launch robot04_slam hector.launch.py                  # hector + RViz
+```
+
+Hector matches each scan against the map (no odometry) and publishes
+`map -> robot04/odom`, so the encoder odometry stays underneath. Maps are saved to
+`~/Desktop/robot04_maps` as map_server `pgm`/`yaml` (Nav2 can load them).
+
+Measured on robot04 over Wi-Fi: scan latency ≈ 6 ms on top of the 100 ms scan, ~20 KB/s;
+`ms200_node` ≈ 9 % of one Pi core. The Pi 5 could run Hector too; SLAM is on the PC
+for the RViz/tuning convenience. Move it onto the robot once it navigates by itself,
+so a Wi-Fi dropout doesn't lose its localisation.
+
 ## Calibration
 
 `config/robot.yaml`:
@@ -148,4 +178,5 @@ Returns under 0.10 m (`range_min`) are dropped: that is the robot's own frame.
 | Fleet interface, odometry, IMU, safety, boot service | working on robot04 |
 | Depth camera (Deptrum driver on Jazzy) → vision topics | working: RGB and depth 15 Hz, JPEG 10 Hz at 480 px (`camera_rate`, `camera_width` launch args). The driver sometimes stalls: `camera_bridge` kills it after 6 s without frames and launch respawns it (~12 s to recover) |
 | Lidar (`ms200_node`, own MS200 driver) | working: `scan` 10 Hz, 450 rays, 0 CRC errors; starts when `/dev/lidar` exists. 0° = the robot's front and counter-clockwise, checked against the depth camera on robot04 |
+| Mapping (PC: Hector SLAM + robot04 mapper app) | working; teleop not yet driven on the floor |
 | `wheel_radius` / `track_width` | estimates, floor calibration to do |
