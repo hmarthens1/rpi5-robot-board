@@ -1,9 +1,14 @@
-"""robot04 mapper: drive the robot from the camera view, run Hector SLAM, save maps.
+"""robot04 mapper: drive the robot from the camera view, run Hector SLAM, save maps,
+and watch / steer autonomous exploration running on the robot.
 
 Keys (anywhere except the map-name box):  W/↑ forward  S/↓ back  A/← left  D/→ right
 Space = stop.  Motion only while a key or button is held; the robot also stops by itself
 0.5 s after the last command (robot_node cmd_vel_timeout) and refuses to drive into an
 obstacle closer than 0.25 m (lidar).
+
+Autonomous exploration runs on the robot (mentorpi_nav: Hector SLAM + Nav2 + explorer),
+started here through ssh as the user service robot-explore. Any drive key, a drive
+button, Space or STOP pauses the explorer first, so the operator always wins.
 """
 import math
 import os
@@ -24,6 +29,8 @@ KEYS = {Qt.Key_W: "f", Qt.Key_Up: "f", Qt.Key_S: "b", Qt.Key_Down: "b",
         Qt.Key_A: "l", Qt.Key_Left: "l", Qt.Key_D: "r", Qt.Key_Right: "r"}
 MIN_CLEARANCE = 0.25        # robot_node's min_clearance: closer than this it refuses to drive
 FRONT_HALF_ANGLE = math.radians(25)
+ROBOT_SSH = os.environ.get("ROBOT_SSH", "ubuntu@192.168.0.21")
+EXPLORE_UNIT = "robot-explore"     # systemd --user unit on the robot (mentorpi_nav/systemd)
 
 
 def clearance(scan):
@@ -95,6 +102,7 @@ class MapperWindow(QMainWindow):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.addWidget(self.map_view, 1)
+        rv.addWidget(self.explore_box())
         row = QHBoxLayout()
         row.addWidget(self.slam_box(), 1)
         row.addWidget(self.save_box(), 1)
@@ -177,6 +185,28 @@ class MapperWindow(QMainWindow):
         v.addWidget(self.slam_state)
         return box
 
+    def explore_box(self):
+        box = QGroupBox("Autonomous exploration (SLAM + Nav2 on the robot)")
+        g = QGridLayout(box)
+        self.stack_button = no_focus(QPushButton("⏻ Start nav stack on robot"))
+        self.stack_button.clicked.connect(self.toggle_stack)
+        self.explore_button = no_focus(QPushButton("▶ Explore"))
+        self.explore_button.setStyleSheet("font-weight:bold;")
+        self.explore_button.clicked.connect(lambda: self.explore("start"))
+        pause = no_focus(QPushButton("⏸ Pause"))
+        pause.clicked.connect(lambda: self.explore("pause"))
+        home = no_focus(QPushButton("⌂ Return home"))
+        home.clicked.connect(lambda: self.explore("home"))
+        for i, b in enumerate((self.stack_button, self.explore_button, pause, home)):
+            b.setMinimumHeight(34)
+            g.addWidget(b, 0, i)
+        self.explore_state = QLabel("nav stack not running")
+        self.explore_state.setStyleSheet("font-family:monospace;")
+        self.explore_state.setWordWrap(True)
+        g.addWidget(self.explore_state, 1, 0, 1, 4)
+        self.stack_proc = None
+        return box
+
     def save_box(self):
         box = QGroupBox("Save map → " + MAPS_DIR.replace(os.path.expanduser("~"), "~"))
         v = QVBoxLayout(box)
@@ -220,7 +250,13 @@ class MapperWindow(QMainWindow):
             self.drive_tick()
         return super().eventFilter(obj, e)
 
+    def explorer_active(self):
+        e = self.bridge.snapshot()["explore"]
+        return e is not None and time.monotonic() - e[1] < 3.0 and e[0].get("state") in ("exploring", "returning")
+
     def press(self, d):
+        if self.explorer_active():
+            self.bridge.explore_command("pause")      # the operator takes over
         self.held.add(d)
         self.drive_tick()
 
@@ -239,6 +275,7 @@ class MapperWindow(QMainWindow):
             self.moving = False
 
     def stop_robot(self):
+        self.bridge.explore_command("pause")
         self.held.clear()
         self.moving = False
         self.bridge.stop()
@@ -308,6 +345,62 @@ class MapperWindow(QMainWindow):
         self.rviz = subprocess.Popen(["rviz2", "-d", cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      start_new_session=True)
 
+    # ================================================================== exploration
+    def stack_running(self):
+        e = self.bridge.snapshot()["explore"]
+        return e is not None and time.monotonic() - e[1] < 3.0
+
+    def toggle_stack(self):
+        if self.stack_proc is not None and self.stack_proc.poll() is None:
+            return                                   # previous ssh still running
+        action = "stop" if self.stack_running() else "start"
+        if action == "start" and self.slam_running():
+            QMessageBox.warning(self, "Nav stack", "Stop the SLAM on this PC first: the robot runs its own.")
+            return
+        if action == "stop":
+            self.bridge.explore_command("stop")
+        cmd = "systemctl --user %s %s" % (action, EXPLORE_UNIT)
+        self.stack_proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ROBOT_SSH, cmd],
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.stack_action = action
+        self.explore_state.setText("%s: %s …" % (ROBOT_SSH, cmd))
+
+    def explore(self, action):
+        if not self.stack_running():
+            QMessageBox.information(self, "Exploration", "The nav stack is not running on the robot yet:\n"
+                                    "press \"Start nav stack on robot\" and wait for its state to appear.")
+            return
+        if action == "start":
+            self.held.clear()
+        self.bridge.explore_command(action)
+
+    def explore_refresh(self, s, now):
+        if self.stack_proc is not None and self.stack_proc.poll() is not None:
+            out = (self.stack_proc.stdout.read() or "").strip()
+            if self.stack_proc.returncode != 0:
+                QMessageBox.warning(self, "Nav stack", "ssh %s failed (%d):\n%s" % (ROBOT_SSH, self.stack_proc.returncode, out))
+            self.stack_proc = None
+        e = s["explore"]
+        if e is None or now - e[1] > 3.0:
+            self.stack_button.setText("⏻ Start nav stack on robot")
+            if self.stack_proc is None:
+                self.explore_state.setText("nav stack not running on the robot" if e is None else
+                                           "no explorer state for %.0f s (stack stopped or Wi-Fi?)" % (now - e[1]))
+            self.map_view.set_explore(None, None, None, None)
+            return None
+        st = e[0]
+        self.stack_button.setText("⏻ Stop nav stack")
+        mins, secs = divmod(int(st.get("elapsed_s", 0)), 60)
+        self.explore_state.setText(
+            "%-9s %s\n%d:%02d  driven %.1f m  goals %d sent / %d reached / %d explored / %d failed   frontiers %d   Nav2 %s"
+            % (st.get("state", "?").upper(), st.get("message", ""), mins, secs, st.get("distance_m", 0.0),
+               st.get("goals_sent", 0), st.get("goals_reached", 0), st.get("goals_explored", 0),
+               st.get("goals_failed", 0), len(st.get("frontiers", [])), "ready" if st.get("nav2") else "starting…"))
+        active = st.get("state") in ("exploring", "returning")
+        self.map_view.set_explore(s["plan"] if active else None, st.get("goal"),
+                                  st.get("frontiers"), st.get("home"))
+        return st
+
     # ================================================================== saving
     def unsaved(self):
         s = self.bridge.snapshot()
@@ -357,9 +450,11 @@ class MapperWindow(QMainWindow):
                                if s["image"] else "waiting for video…")
         self.video_info.setText("video %.0f fps" % self.bridge.rates["image"].hz())
 
+        st = self.explore_refresh(s, now)
+
         # SLAM state + map
-        running = self.slam_running()
-        if self.slam is not None and not running:          # launch exited by itself
+        running = self.slam_running() or st is not None
+        if self.slam is not None and not self.slam_running():          # launch exited by itself
             self.slam_state.setText("SLAM exited (code %s), see %s/logs" % (self.slam.returncode, MAPS_DIR))
             self.slam = None
             self.slam_button.setText("▶ Start SLAM")
@@ -372,7 +467,8 @@ class MapperWindow(QMainWindow):
                 self.map_view.message = "SLAM starting… waiting for the first map"
             else:
                 self.map_view.message = "" if pose else "SLAM running, no pose (scans arriving?)"
-            self.slam_state.setText("running %s" % ("" if s["map"] is not None else "(waiting for map)"))
+            self.slam_state.setText("running %s%s" % ("on the robot " if st is not None else "",
+                                                     "" if s["map"] is not None else "(waiting for map)"))
         else:
             self.map_view.message = ("SLAM stopped: last map still shown, you can save it"
                                      if s["map"] is not None else "SLAM not running: press Start SLAM")
@@ -393,7 +489,7 @@ class MapperWindow(QMainWindow):
         parts.append("battery %s" % ("%.2f V%s" % (v, "  LOW" if v < 7.0 else "") if v else "?"))
         if pose:
             parts.append("map pose x %.2f  y %.2f  θ %.0f°" % (pose[0], pose[1], math.degrees(pose[2])))
-        parts.append("driving" if self.moving else "stopped")
+        parts.append("teleop" if self.moving else ("autonomous" if st and st.get("state") in ("exploring", "returning") else "stopped"))
         self.status.setText("   |   ".join(parts))
 
     # ================================================================== close

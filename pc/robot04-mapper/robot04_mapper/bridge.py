@@ -6,11 +6,14 @@ so no Qt object is touched from the ROS thread.
   in   /<robot>/vision/image/compressed  JPEG from camera_bridge (10 Hz while subscribed)
   in   /<robot>/scan                     MS200, 10 Hz
   in   /<robot>/battery, /<robot>/odom
-  in   /map, /slam_out_pose              from hector_mapping (when SLAM runs)
+  in   /map, /slam_out_pose              from hector_mapping (when SLAM runs, here or on the robot)
+  in   /<robot>/explore/state            explorer JSON (state, goal, frontiers, ...), 1 Hz
+  in   /plan                             Nav2's global path to the current goal
   out  /<robot>/cmd_vel                  linear.x / angular.z in -1..1 of the robot's max_speed
   out  /<robot>/command                  JSON {"id", "action": "stop"}
   out  /<robot>/vision/control           JSON {"image": "rgb"|"depth"}
   out  /syscommand                       "reset" -> hector starts a new map
+  out  /<robot>/explore/control          JSON {"action": "start"|"pause"|"stop"|"home"|"save"}
 """
 import json
 import math
@@ -23,7 +26,7 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import BatteryState, CompressedImage, LaserScan
 from std_msgs.msg import String
 
@@ -61,6 +64,8 @@ class Bridge:
         self.odom = None             # (x, y, yaw)
         self.battery_v = None
         self.trail = []              # SLAM poses, for the drawn path and the saved metadata
+        self.explore = None          # (dict, monotonic time) from the robot's explorer
+        self.plan = None             # [(x, y)] Nav2 global path
         self.rates = {"image": Rate(), "scan": Rate()}
 
         rclpy.init(args=None)
@@ -72,10 +77,13 @@ class Bridge:
         n.create_subscription(Odometry, r + "/odom", self.on_odom, qos_profile_sensor_data)
         n.create_subscription(OccupancyGrid, "/map", self.on_map, MAP_QOS)
         n.create_subscription(PoseStamped, "/slam_out_pose", self.on_pose, 10)
+        n.create_subscription(String, r + "/explore/state", self.on_explore, 10)
+        n.create_subscription(Path, "/plan", self.on_plan, 10)
         self.cmd_pub = n.create_publisher(Twist, r + "/cmd_vel", 10)
         self.command_pub = n.create_publisher(String, r + "/command", 10)
         self.vision_pub = n.create_publisher(String, r + "/vision/control", 10)
         self.sys_pub = n.create_publisher(String, "/syscommand", 10)
+        self.explore_pub = n.create_publisher(String, r + "/explore/control", 10)
 
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(n)
@@ -121,12 +129,25 @@ class Bridge:
             if not self.trail or math.hypot(x - self.trail[-1][0], y - self.trail[-1][1]) > 0.05:
                 self.trail.append((x, y))
 
+    def on_explore(self, msg):
+        try:
+            state = json.loads(msg.data)
+        except ValueError:
+            return
+        with self.lock:
+            self.explore = (state, time.monotonic())
+
+    def on_plan(self, msg):
+        pts = [(p.pose.position.x, p.pose.position.y) for p in msg.poses[::3]]
+        with self.lock:
+            self.plan = pts
+
     # ---------------------------------------------------------------- reads (Qt thread)
     def snapshot(self):
         with self.lock:
             return {"image": self.image, "scan": self.scan, "map": self.map, "map_seq": self.map_seq,
                     "slam_pose": self.slam_pose, "odom": self.odom, "battery_v": self.battery_v,
-                    "trail": list(self.trail)}
+                    "trail": list(self.trail), "explore": self.explore, "plan": self.plan}
 
     def clear_trail(self):
         with self.lock:
@@ -156,6 +177,10 @@ class Bridge:
 
     def set_image_mode(self, mode):
         self.vision_pub.publish(String(data=json.dumps({"image": mode})))
+
+    def explore_command(self, action, **kw):
+        kw["action"] = action
+        self.explore_pub.publish(String(data=json.dumps(kw)))
 
     def reset_map(self):
         self.sys_pub.publish(String(data="reset"))

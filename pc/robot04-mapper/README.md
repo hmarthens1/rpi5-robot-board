@@ -14,6 +14,7 @@ and save the maps. Separate from robot-fleet-gui on purpose: one robot, one job.
 | Map | Hector's `/map`, the robot (green), its path (blue), the live scan (red). Wheel zoom, drag pan, double-click follow |
 | SLAM | **Start SLAM** runs `ros2 launch robot04_slam hector.launch.py` (from `~/hector_ws`); **New map** resets it; **Open RViz** for the full view |
 | Save | to `~/Desktop/robot04_maps/<name>.{pgm,yaml,png,json}`: map_server format (Nav2 loads the yaml), a PNG with the path, and notes (size, explored area, path length). SLAM logs go to `logs/` there |
+| Explore | **Start nav stack on robot** runs `systemctl --user start robot-explore` on the robot over ssh (`ROBOT_SSH`, default `ubuntu@192.168.0.21`): Hector SLAM + Nav2 + explorer, all on the Pi. **Explore** / **Pause** / **Return home** steer it; the map then shows Nav2's plan (green), the goal (magenta ×), the frontiers (cyan) and the start (yellow). Any drive key, a drive button, Space or STOP pauses the explorer first. Don't press Start SLAM while it runs: the robot has its own |
 
 Safety lives on the robot, not here: `robot_node` stops 0.5 s after the last `cmd_vel`,
 refuses to drive towards an obstacle closer than 0.25 m (lidar, ±25° front/back), and the

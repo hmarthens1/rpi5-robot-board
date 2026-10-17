@@ -1,4 +1,6 @@
-"""Map panel: the SLAM occupancy grid, the robot, its path and the live scan.
+"""Map panel: the SLAM occupancy grid, the robot, its path and the live scan; while the
+robot explores on its own, also Nav2's planned path (green), the goal (magenta) and the
+frontiers the explorer knows about (cyan, size = frontier length).
 
 Drawn in world metres with a y-up transform, so OccupancyGrid row 0 (the map origin)
 lands at the bottom without flipping the data. Wheel = zoom, drag = pan, double-click =
@@ -51,6 +53,10 @@ class MapView(QWidget):
         self.pose = None               # (x, y, yaw)
         self.trail = []
         self.scan_pts = []
+        self.plan = []                 # [(x, y)] Nav2 global path
+        self.goal = None               # (x, y)
+        self.frontiers = []            # [(x, y, size_m)]
+        self.home = None
         self.message = "SLAM not running: press Start SLAM"
 
     # ------------------------------------------------------------------ data
@@ -86,6 +92,9 @@ class MapView(QWidget):
             self.center = QPointF(pose[0], pose[1])
         self.update()
 
+    def set_explore(self, plan, goal, frontiers, home):
+        self.plan, self.goal, self.frontiers, self.home = plan or [], goal, frontiers or [], home
+
     # ------------------------------------------------------------------ drawing
     def world_transform(self):
         t = QTransform()
@@ -106,6 +115,23 @@ class MapView(QWidget):
         if len(self.trail) > 1:
             p.setPen(self.cosmetic(QColor(60, 140, 255), 2))
             p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in self.trail]))
+        for fx, fy, size in self.frontiers:
+            r = min(0.25, 0.05 + 0.1 * size)
+            p.setPen(self.cosmetic(QColor(0, 200, 230), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(fx, fy), r, r)
+        if len(self.plan) > 1:
+            p.setPen(self.cosmetic(QColor(30, 200, 60), 3))
+            p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in self.plan]))
+        if self.goal:
+            gx, gy = self.goal
+            p.setPen(self.cosmetic(QColor(230, 0, 200), 3))
+            p.drawLine(QPointF(gx - 0.12, gy - 0.12), QPointF(gx + 0.12, gy + 0.12))
+            p.drawLine(QPointF(gx - 0.12, gy + 0.12), QPointF(gx + 0.12, gy - 0.12))
+        if self.home:
+            p.setPen(self.cosmetic(QColor(255, 200, 0), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(self.home[0] - 0.1, self.home[1] - 0.1, 0.2, 0.2))
         if self.scan_pts:
             p.setPen(self.cosmetic(QColor(230, 40, 40), 3))
             p.drawPoints(QPolygonF(self.scan_pts))
