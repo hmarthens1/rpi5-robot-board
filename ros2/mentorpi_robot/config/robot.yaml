@@ -13,9 +13,9 @@
       port: /dev/rrclite
       left_motor: 1
       right_motor: 2
-      left_sign: 1             # calibrated on robot04, see README "Calibration"
-      right_sign: -1
+      left_sign: -1            # both flipped 2026-10-17: lidar + camera showed linear.x > 0 driving
+      right_sign: 1            # toward the rear and turn > 0 turning clockwise (README "Calibration")
       wheel_radius: 0.0325     # m, track drive sprocket - calibrate with "move"
-      track_width: 0.170       # m, effective - calibrate with "turn"
+      track_width: 0.105       # m, effective on carpet: scan-matched yaw / encoder yaw (2026-10-17)
       battery_low_v: 7.0       # 2S pack
       lidar_yaw_deg: 0.0

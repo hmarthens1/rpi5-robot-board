@@ -19,6 +19,9 @@ and the voice agent already use:
 The Deptrum driver sometimes stops delivering frames without exiting (robot04, Oct 2026).
 If no colour frame arrives for restart_after_s, this node kills aurora930_node and the
 launch file (respawn=True) starts it again; at most once per restart_backoff_s.
+After a driver that died abnormally is replaced, Fast DDS may never match this node's
+old subscriptions to the new publisher (a fresh subscriber gets frames, this one does
+not), so the image subscriptions are recreated a few seconds after every restart.
 """
 import json
 import subprocess
@@ -61,12 +64,24 @@ class CameraBridge(Node):
         self.rgb_stamp = self.depth_stamp = 0.0
         self.img_pub = self.create_publisher(CompressedImage, "vision/image/compressed", qos_profile_sensor_data)
         self.state_pub = self.create_publisher(String, "vision/state", 10)
-        self.create_subscription(Image, "camera/rgb/image_raw", self.on_rgb, qos_profile_sensor_data)
-        self.create_subscription(Image, "camera/depth/image_raw", self.on_depth, qos_profile_sensor_data)
+        self.image_subs = []
+        self.resubscribe_timer = None
+        self.subscribe_camera()
         self.create_subscription(String, "vision/control", self.on_control, 10)
         self.create_timer(1.0 / self.rate, self.publish_image)
         self.create_timer(0.5, self.publish_state)
         self.create_timer(1.0, self.watchdog)
+
+    def subscribe_camera(self):
+        if self.resubscribe_timer is not None:
+            self.resubscribe_timer.cancel()
+            self.destroy_timer(self.resubscribe_timer)
+            self.resubscribe_timer = None
+        for sub in self.image_subs:
+            self.destroy_subscription(sub)
+        self.image_subs = [
+            self.create_subscription(Image, "camera/rgb/image_raw", self.on_rgb, qos_profile_sensor_data),
+            self.create_subscription(Image, "camera/depth/image_raw", self.on_depth, qos_profile_sensor_data)]
 
     def on_rgb(self, msg):
         with self.lock:
@@ -127,6 +142,9 @@ class CameraBridge(Node):
             # the SDK can hang on shutdown: kill the same pids (not the respawned one) if still there
             threading.Timer(5.0, subprocess.run, args=(["kill", "-KILL"] + pids,),
                             kwargs={"check": False, "stderr": subprocess.DEVNULL}).start()
+        # once the respawned driver is up, subscribe again (see the module docstring)
+        if self.resubscribe_timer is None:
+            self.resubscribe_timer = self.create_timer(12.0, self.subscribe_camera)
 
     def publish_state(self):
         with self.lock:
