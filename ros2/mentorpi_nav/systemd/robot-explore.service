@@ -1,0 +1,18 @@
+# systemd --user unit: SLAM + Nav2 + explorer on robot04, started on demand (not at boot)
+# by the PC mapper app:  ssh ubuntu@robot04 systemctl --user start robot-explore
+# Install:  cp robot-explore.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#           sudo loginctl enable-linger ubuntu      (user services without a login session)
+# Same DDS settings as robot-fleet-node.service (Cyclone, like the laptop).
+[Unit]
+Description=robot04 autonomous exploration (Hector SLAM + Nav2 + explorer)
+
+[Service]
+Environment=ROS_DOMAIN_ID=17
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && exec ros2 launch mentorpi_nav explore.launch.py'
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

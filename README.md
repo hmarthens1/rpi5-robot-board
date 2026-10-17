@@ -159,6 +159,45 @@ Measured on robot04 over Wi-Fi: scan latency ≈ 6 ms on top of the 100 ms scan,
 for the RViz/tuning convenience. Move it onto the robot once it navigates by itself,
 so a Wi-Fi dropout doesn't lose its localisation.
 
+## On the robot: autonomous exploration (Hector SLAM + Nav2 + frontiers)
+
+`ros2/mentorpi_nav` runs SLAM, Nav2 and a frontier explorer **on the Pi**, so a Wi-Fi
+dropout costs the PC its view, never the robot its control loop. The PC app starts it,
+watches it (camera, map, Nav2 plan, frontiers, goal) and can pause, take over, send it
+home or save the map.
+
+```bash
+# on robot04, once
+sudo apt install ros-jazzy-navigation2 ros-jazzy-nav2-bringup ros-jazzy-laser-geometry python3-scipy
+cd ~/ros2_ws/src && git clone https://github.com/RobotX-Workshops/hector_slam_ros2.git
+cp -r ~/rpi5-robot-board/ros2/mentorpi_nav .     # (or rsync from the PC)
+cd ~/ros2_ws && colcon build --packages-up-to hector_mapping mentorpi_nav --cmake-args -DCMAKE_BUILD_TYPE=Release
+mkdir -p ~/.config/systemd/user && cp src/mentorpi_nav/systemd/robot-explore.service ~/.config/systemd/user/
+systemctl --user daemon-reload && sudo loginctl enable-linger ubuntu
+
+# then from the PC app: "Start nav stack on robot" -> "Explore"; or by hand:
+systemctl --user start robot-explore
+ros2 topic pub --once /robot04/explore/control std_msgs/String '{data: "{\"action\": \"start\"}"}'
+```
+
+| node | what it does |
+|---|---|
+| `hector_mapping` | `/map` and `map -> robot04/odom` from the scan (no odometry) |
+| Nav2 (`config/nav2.yaml`) | NavFn on the map + live lidar, Regulated Pure Pursuit 0.10 m/s, 0.15 m robot circle, local costmap 10 Hz, recoveries |
+| `cmd_vel_adapter` | Nav2's m/s -> robot_node's fractions (`v/0.153`, `w*0.105/(2*0.153)`, tracks ≥ 0.12); muted while paused |
+| `explorer` | frontiers -> `NavigateToPose` goals; blacklists failed and reached-but-uncleared frontiers; no frontier left -> drive home, save to `~/maps`; logs every event to `~/explore_logs/*.jsonl` |
+
+Obstacle avoidance is layered: the planner keeps 0.45 m from mapped walls, the controller
+stops before a collision on its path within 1.5 s (live lidar), and robot_node refuses to
+drive toward anything closer than 0.25 m. The lidar cannot see stairs or cables.
+
+`tools/sim_explore.py` runs the explorer's frontier logic on a synthetic apartment;
+`tools/analyze_run.py` turns a run log + saved map into figures and a summary.
+
+Both robot services run **Cyclone DDS** (`/etc/systemd/system/robot-fleet-node.service.d/rmw.conf`),
+like the laptop: with Fast DDS the camera bridge lost its frames after a driver restart
+and some messages reached the Humble laptop garbled.
+
 ## Calibration
 
 `config/robot.yaml`:
@@ -167,9 +206,9 @@ so a Wi-Fi dropout doesn't lose its localisation.
 |---|---|---|
 | `motor_profile` | `JGB520` | JGB37-520, 1:90, 11-line encoder: 3960 counts per turn (Lab 03) |
 | `left_motor`, `right_motor` | 1, 2 | the ports the tracks are plugged into |
-| `left_sign`, `right_sign` | +1, −1 | checked on robot04: `drive vy=0.3` runs both tracks forward, `turn=0.3` turns left |
+| `left_sign`, `right_sign` | −1, +1 | **corrected 2026-10-17**: with +1/−1 the robot drove toward its rear and turned clockwise on `turn > 0` (lidar scan matching and the camera agreed); now `linear.x > 0` drives toward the camera and `turn > 0` turns left |
 | `wheel_radius` | 0.0325 m | **estimate** — calibrate: `move` 0.5 m on the floor, measure, scale by measured/0.5 |
-| `track_width` | 0.170 m | **estimate** — calibrate: `turn` 360°, scale by the angle actually turned |
+| `track_width` | 0.105 m | effective on carpet: encoder yaw scaled to the yaw measured by matching lidar scans before and after a turn (2026-10-17) |
 
 ## Status
 
